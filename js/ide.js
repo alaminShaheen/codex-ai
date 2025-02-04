@@ -174,6 +174,7 @@ async function getAICompletions(position) {
     const language = $selectLanguage.find(":selected").text();
     const lineContent = code.split('\n')[position.lineNumber - 1];
     const currentLine = lineContent.slice(0, position.column - 1);
+    console.log(lineContent, currentLine)
 
     const prompt = `
         Given this code context in ${language}: ${code}
@@ -936,8 +937,40 @@ $(document).ready(async function () {
                 }
             });
 
+            sourceEditor.onDidChangeModelContent((e) => {
+                // Clear any pending completion request
+                if (completionTimeout) {
+                    clearTimeout(completionTimeout);
+                }
+
+                // Hide any existing completion widget
+                hideExistingCompletionsWidget();
+
+                // Set new timeout for completion request
+                completionTimeout = setTimeout(async () => {
+                    const position = sourceEditor.getPosition();
+                    const model = sourceEditor.getModel();
+
+                    // Don't trigger completion if line is empty or cursor is at start
+                    const lineContent = model.getLineContent(position.lineNumber);
+                    if (!lineContent.trim() || position.column === 1) return;
+                    const suggestions = await getAICompletions(position);
+                    showCompletionsWidget(suggestions, position);
+                }, COMPLETION_DELAY);
+            });
+
             sourceEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, run);
+            sourceEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, async () => {
+                const position = sourceEditor.getPosition();
+                const model = sourceEditor.getModel();
+                const code = model.getValue();
+                const language = $selectLanguage.find(":selected").text();
+
+                const suggestions = await getAICompletions(code, position, language);
+                showCompletionsWidget(suggestions, position);
+            });
         });
+
 
         layout.registerComponent("stdin", function (container, state) {
             stdinEditor = monaco.editor.create(container.getElement()[0], {
