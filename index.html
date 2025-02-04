@@ -7,6 +7,10 @@
     <script src="https://js.puter.com/v2/"></script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js" integrity="sha512-v2CJ7UaYy4JwqLDIrZUI/4hqeoQieOmAZNXBeQyjo21dadnwR+8ZaIJVT8EE2iyI61OV8e6M8PP2/4hpQINQ/g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/default.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
 
     <script>
         var require = {
@@ -78,97 +82,97 @@
 </head>
 
 <body>
-    <div id="judge0-site-navigation" class="ui top fixed inverted borderless menu">
-        <a id="judge0-header" href="https://judge0.com" target="_blank" class="header item judge0-hidden-for-minimal-style judge0-hidden-for-standalone-style">
-            <img id="judge0-logo" src="./images/icon_var2_rounded_512.png" />
+<div id="judge0-site-navigation" class="ui top fixed inverted borderless menu">
+    <a id="judge0-header" href="https://judge0.com" target="_blank" class="header item judge0-hidden-for-minimal-style judge0-hidden-for-standalone-style">
+        <img id="judge0-logo" src="./images/icon_var2_rounded_512.png" />
+    </a>
+    <div class="ui simple dropdown item">
+        <span class="text">File</span>
+        <i class="dropdown icon"></i>
+        <div class="menu judge0-file-menu">
+            <div class="item" onclick="openAction()">
+                <span class="description">+O</span>
+                <span class="text">Open File...</span>
+                <input type="file" id="open-file-input" style="display: none;">
+            </div>
+            <div class="item" onclick="saveAction()">
+                <span class="description">+S</span>
+                <span class="text">Save</span>
+            </div>
+        </div>
+    </div>
+    <div class="ui simple dropdown item">
+        <span class="text">Help</span>
+        <i class="dropdown icon"></i>
+        <div class="menu judge0-file-menu">
+            <a href="PRIVACY.md" class="link text item" target="_blank">Privacy Policy</a>
+            <a href="TERMS.md" class="link text item" target="_blank">Terms of Service</a>
+        </div>
+    </div>
+    <div class="item">
+        <div class="ui input">
+            <select id="select-language" class="ui search selection dropdown"></select>
+        </div>
+    </div>
+    <div class="item">
+        <div class="ui left icon transparent input">
+            <i class="flag icon"></i>
+            <input id="compiler-options" type="text" placeholder="Compiler options"></input>
+        </div>
+    </div>
+    <div class="item">
+        <div class="ui left icon transparent input">
+            <i class="terminal icon"></i>
+            <input id="command-line-arguments" type="text" placeholder="Command line arguments"></input>
+        </div>
+    </div>
+    <div class="item">
+        <button id="run-btn" class="ui primary labeled icon button" data-content="+↵" data-position="bottom center">
+            <i class="play icon"></i>Run Code
+        </button>
+    </div>
+    <div class="right menu">
+        <div id="judge0-theme-toggle-btn" class="icon link item" onclick="toggleThemeMode()" data-content="">
+            <i id="judge0-theme-toggle-btn-icon" class="sun icon"></i>
+        </div>
+        <a class="icon item judge0-hidden-for-minimal-style" href="https://platform.sulu.sh/apis/judge0" target="_blank" data-content="API Docs">
+            <i class="book icon"></i>
         </a>
-        <div class="ui simple dropdown item">
-            <span class="text">File</span>
-            <i class="dropdown icon"></i>
-            <div class="menu judge0-file-menu">
-                <div class="item" onclick="openAction()">
-                    <span class="description">+O</span>
-                    <span class="text">Open File...</span>
-                    <input type="file" id="open-file-input" style="display: none;">
-                </div>
-                <div class="item" onclick="saveAction()">
-                    <span class="description">+S</span>
-                    <span class="text">Save</span>
-                </div>
-            </div>
-        </div>
-        <div class="ui simple dropdown item">
-            <span class="text">Help</span>
-            <i class="dropdown icon"></i>
-            <div class="menu judge0-file-menu">
-                <a href="PRIVACY.md" class="link text item" target="_blank">Privacy Policy</a>
-                <a href="TERMS.md" class="link text item" target="_blank">Terms of Service</a>
-            </div>
-        </div>
-        <div class="item">
-            <div class="ui input">
-                <select id="select-language" class="ui search selection dropdown"></select>
-            </div>
-        </div>
-        <div class="item">
-            <div class="ui left icon transparent input">
-                <i class="flag icon"></i>
-                <input id="compiler-options" type="text" placeholder="Compiler options"></input>
-            </div>
-        </div>
-        <div class="item">
-            <div class="ui left icon transparent input">
-                <i class="terminal icon"></i>
-                <input id="command-line-arguments" type="text" placeholder="Command line arguments"></input>
-            </div>
-        </div>
-        <div class="item">
-            <button id="run-btn" class="ui primary labeled icon button" data-content="+↵" data-position="bottom center">
-                <i class="play icon"></i>Run Code
-            </button>
-        </div>
-        <div class="right menu">
-            <div id="judge0-theme-toggle-btn" class="icon link item" onclick="toggleThemeMode()" data-content="">
-                <i id="judge0-theme-toggle-btn-icon" class="sun icon"></i>
-            </div>
-            <a class="icon item judge0-hidden-for-minimal-style" href="https://platform.sulu.sh/apis/judge0" target="_blank" data-content="API Docs">
-                <i class="book icon"></i>
-            </a>
-            <a class="icon item judge0-hidden-for-minimal-style" href="https://github.com/judge0/ide/tree/master/embed" target="_blank" data-content="Embed">
-                <i class="code icon"></i>
-            </a>
-            <a class="icon item judge0-hidden-for-minimal-style" href="https://github.com/judge0/ide" target="_blank" data-content="GitHub Repository">
-                <i class="github icon"></i>
-            </a>
+        <a class="icon item judge0-hidden-for-minimal-style" href="https://github.com/judge0/ide/tree/master/embed" target="_blank" data-content="Embed">
+            <i class="code icon"></i>
+        </a>
+        <a class="icon item judge0-hidden-for-minimal-style" href="https://github.com/judge0/ide" target="_blank" data-content="GitHub Repository">
+            <i class="github icon"></i>
+        </a>
+    </div>
+</div>
+
+<div id="judge0-site-content"></div>
+
+<div id="judge0-site-modal" class="ui modal">
+    <div class="header">
+        <span id="title"></span>
+    </div>
+    <div class="scrolling content"></div>
+    <div class="actions">
+        <a id="report-problem-btn" class="ui labeled icon red button" href="https://github.com/judge0/ide/issues/new?title=New+bug+report&body=Describe+the+problem." target="_blank">
+            <i class="flag icon"></i>
+            Report Problem
+        </a>
+        <div class="ui labeled icon cancel secondary button">
+            <i class="close icon"></i>
+            Close (ESC)
         </div>
     </div>
+</div>
 
-    <div id="judge0-site-content"></div>
+<div id="judge0-status-line" class="ui bottom right attached label"></div>
 
-    <div id="judge0-site-modal" class="ui modal">
-        <div class="header">
-            <span id="title"></span>
-        </div>
-        <div class="scrolling content"></div>
-        <div class="actions">
-            <a id="report-problem-btn" class="ui labeled icon red button" href="https://github.com/judge0/ide/issues/new?title=New+bug+report&body=Describe+the+problem." target="_blank">
-                <i class="flag icon"></i>
-                Report Problem
-            </a>
-            <div class="ui labeled icon cancel secondary button">
-                <i class="close icon"></i>
-                Close (ESC)
-            </div>
-        </div>
-    </div>
-
-    <div id="judge0-status-line" class="ui bottom right attached label"></div>
-
-    <!-- <i class="copyright outline icon"></i>2016-2025 Judge0 d.o.o. – All Rights Reserved. -->
-    <script>
-        if ("serviceWorker" in navigator) {
-            navigator.serviceWorker.register("sw.js").then(() => console.log("Service Worker Registered"));
-        }
-    </script>
+<!-- <i class="copyright outline icon"></i>2016-2025 Judge0 d.o.o. – All Rights Reserved. -->
+<script>
+    if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("sw.js").then(() => console.log("Service Worker Registered"));
+    }
+</script>
 </body>
 </html>

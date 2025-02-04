@@ -45,6 +45,46 @@ var timeEnd;
 var sqliteAdditionalFiles;
 var languages = {};
 
+var OPENROUTER_API_KEY = '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';
+var OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+var AI_SYSTEM_PROMPT = "You are a helpful coding assistant. You help users write, debug and understand code.";
+let completionTimeout = null;
+const COMPLETION_DELAY = 500;
+
+
+var AI_MODELS = {
+    'openai/gpt-4': {
+        name: 'GPT-4',
+        maxTokens: 8192,
+        description: 'Most capable GPT-4 model for complex tasks'
+    },
+    'openai/gpt-3.5-turbo': {
+        name: 'GPT-3.5 Turbo',
+        maxTokens: 4096,
+        description: 'Faster and more cost-effective for simpler tasks'
+    },
+    'openai/gpt-4-turbo': {
+        name: 'GPT-4 Turbo',
+        maxTokens: 128000,
+        description: 'Latest GPT-4 with larger context window'
+    },
+    'anthropic/claude-3-opus': {
+        name: 'Claude 3 Opus',
+        maxTokens: 200000,
+        description: 'Most powerful Claude model'
+    },
+    'anthropic/claude-3-sonnet': {
+        name: 'Claude 3 Sonnet',
+        maxTokens: 200000,
+        description: 'Balanced Claude model'
+    }
+};
+
+// var currentModel = 'google/gemini-2.0-flash-thinking-exp:free'; // default model
+var currentModel = 'openai/gpt-3.5-turbo'; // default model
+var aiChatEditor;
+var aiChatHistory = [];
+
 var layoutConfig = {
     settings: {
         showPopoutIcon: false,
@@ -82,10 +122,250 @@ var layoutConfig = {
                 componentState: {
                     readOnly: true
                 }
+            }, {
+                type: "component",
+                componentName: "ai-chat",
+                id: "ai-chat",
+                title: "AI Assistant",
+                height: 30,
+                isClosable: false,
+                componentState: {
+                    readOnly: false
+                }
             }]
         }]
     }]
 };
+
+async function sendToAI(prompt) {
+    try {
+        const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                'HTTP-Referer': window.location.href,
+                'X-Title': 'Code IDE Assistant'
+            },
+            body: JSON.stringify({
+                model: currentModel,
+                messages: [
+                    { role: "system", content: AI_SYSTEM_PROMPT },
+                    { role: "user", content: prompt }
+                ],
+                // max_tokens: model.maxTokens
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error?.message || 'API request failed');
+        }
+
+        const data = await response.json();
+        return data.choices[0].message.content;
+    } catch (error) {
+        console.error('AI API Error:', error);
+        return "Sorry, I encountered an error. Please try again.";
+    }
+}
+
+
+function createModelSelector() {
+    const selectorHtml = `
+        <div class="model-selector">
+            <label>AI Model:</label>
+            <select class="ui dropdown" id="modelSelector">
+                ${Object.entries(AI_MODELS).map(([key, model]) => `
+                    <option value="${key}" ${key === currentModel ? 'selected' : ''}>
+                        ${model.name}
+                    </option>
+                `).join('')}
+            </select>
+            <div class="model-info" id="modelInfo"></div>
+        </div>
+    `;
+
+    const selector = $(selectorHtml);
+
+    // Initialize the model info
+    selector.find('#modelInfo').html(`
+        <div class="model-description">
+            ${AI_MODELS[currentModel].description}
+        </div>
+    `);
+
+    // Add change handler directly to the selector
+    selector.find('#modelSelector').on('change', function() {
+        const selectedModel = $(this).val();
+        currentModel = selectedModel;
+        const model = AI_MODELS[selectedModel];
+
+        selector.find('#modelInfo').html(`
+            <div class="model-description">
+                ${model.description}
+            </div>
+        `);
+
+        // Add system message about model change
+        addMessage(`Switched to ${model.name}\n${model.description}`, 'system');
+    });
+
+    return selector;
+}
+
+function createChatInterface() {
+    const chatHtml = `
+        <div class="ai-chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <div class="chat-message system-message">
+                    <div class="message-content">
+                        Hello! I'm your AI coding assistant. I can help you with:
+                        <ul>
+                            <li>Explaining code</li>
+                            <li>Suggesting improvements</li>
+                            <li>Debugging issues</li>
+                            <li>Answering programming questions</li>
+                        </ul>
+                        Feel free to ask anything!
+                    </div>
+                </div>
+            </div>
+            <div class="chat-input-container">
+                <textarea 
+                    id="chatInput" 
+                    placeholder="Ask a question about your code..."
+                    rows="2"
+                    class="chat-input"
+                ></textarea>
+                <button id="sendChat" class="ui primary button">
+                    <i class="paper plane icon"></i>
+                    Send
+                </button>
+            </div>
+        </div>
+    `;
+
+    const chatElement = $(chatHtml);
+
+    // Add context button after the interface is created
+    setTimeout(() => {
+        $('#contextButtonContainer').append(createContextButton());
+    }, 0);
+
+    return chatElement;
+}
+
+async function handleChatMessage(message) {
+    const chatMessages = $("#chatMessages");
+    const $chatInput = $("#chatInput"); // Using $ prefix to indicate jQuery object
+    const $sendButton = $("#sendChat");
+
+    // Add user message
+    addMessage(message, 'user');
+    const code = sourceEditor.getValue();
+    const language = $selectLanguage.find(":selected").text();
+    const input = stdinEditor.getValue();
+    const output = stdoutEditor.getValue();
+    const compilerOutput = $statusLine.text();
+
+    // Show typing indicator
+    const loadingIndicator = showTypingIndicator();
+    chatMessages.append(loadingIndicator);
+    chatMessages.scrollTop(chatMessages[0].scrollHeight);
+
+    // Prepare context for AI
+
+    let contextString = "";
+    if (code) {
+        contextString += `Full code:\n\`\`\`${language}\n${code}\n\`\`\`\n\n`;
+    }
+
+    if (input) {
+        contextString += `Input:\n\`\`\`\n${input}\n\`\`\`\n\n`;
+    }
+    if (output) {
+        contextString += `Output:\n\`\`\`\n${output}\n\`\`\`\n\n`;
+    }
+    if (compilerOutput && compilerOutput.includes("Error")) {
+        contextString += `Compiler Output:\n\`\`\`\n${compilerOutput}\n\`\`\`\n\n`;
+    }
+
+    let prompt = contextString ?
+        `Given this context:\n\n${contextString}\n${message}` :
+        message;
+
+    try {
+        const response = await sendToAI(prompt);
+        loadingIndicator.remove();
+        addMessage(response, 'ai');
+
+        // Store in chat history
+        aiChatHistory.push({ role: 'user', content: message });
+        aiChatHistory.push({ role: 'assistant', content: response });
+        if (aiChatHistory.length > 50) { // Keep last 50 messages
+            aiChatHistory = aiChatHistory.slice(-50);
+        }
+    } catch (error) {
+        loadingIndicator.remove();
+        addMessage("Sorry, I encountered an error. Please try again.", 'error');
+    } finally {
+        // Re-enable input and button
+        $chatInput.attr('disabled', false);
+        $sendButton.removeClass('disabled');
+        $chatInput.focus();
+    }
+}
+
+function showTypingIndicator() {
+    return $(`
+        <div class="chat-message ai-message">
+            <div class="typing-indicator">
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+                <div class="typing-dot"></div>
+            </div>
+        </div>
+    `);
+}
+
+function addMessage(content, type = 'ai') {
+    const chatMessages = $("#chatMessages");
+    const messageClass = type === 'user' ? 'user-message' :
+        type === 'system' ? 'system-message' :
+            type === 'error' ? 'error-message' : 'ai-message';
+
+    const messageHtml = `
+        <div class="chat-message ${messageClass}">
+            <div class="message-content">
+                ${type === 'user' ? content : marked.parse(content)}
+            </div>
+        </div>
+    `;
+
+    chatMessages.append(messageHtml);
+    chatMessages.scrollTop(chatMessages[0].scrollHeight);
+}
+
+function formatMessage(content) {
+    // Use marked for markdown formatting
+    const formattedContent = marked.parse(content, {
+        breaks: true,
+        gfm: true
+    });
+
+    return formattedContent;
+}
+
+function explainCode() {
+    const language = $selectLanguage.find(":selected").text();
+    handleChatMessage(`Explain this ${language} code`);
+}
+
+function suggestImprovements() {
+    const language = $selectLanguage.find(":selected").text();
+    handleChatMessage(`Suggest improvements for this ${language} code`);
+}
 
 const PUTER = puter.env === "app";
 var gPuterFile;
@@ -580,6 +860,68 @@ $(document).ready(async function () {
                     enabled: false
                 }
             });
+        });
+
+        layout.registerComponent("ai-chat", function (container, state) {
+            const wrapper = $('<div class="ai-chat-wrapper"></div>');
+            const toolbar = $('<div class="ai-chat-toolbar"></div>');
+
+            // Add model selector
+            const modelSelector = createModelSelector();
+
+            const explainBtn = $('<button class="ui button">Explain Code</button>');
+            const improveBtn = $('<button class="ui button">Suggest Improvements</button>');
+
+            explainBtn.click(explainCode);
+            improveBtn.click(suggestImprovements);
+
+            toolbar.append(modelSelector)
+            toolbar.append(explainBtn)
+            toolbar.append(improveBtn);
+            wrapper.append(toolbar);
+
+            // Add chat interface
+            const chatInterface = createChatInterface();
+            wrapper.append(chatInterface);
+
+            container.getElement().append(wrapper);
+
+            // Set up chat input handlers
+            $("#chatInput").keydown(function(e) {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    const message = $(this).val().trim();
+                    if (message) {
+                        handleChatMessage(message);
+                        $(this).val("");
+                    }
+                }
+            });
+
+            wrapper.on('click', '#sendChat', function() {
+                const message = $("#chatInput").val().trim();
+                if (message) {
+                    handleChatMessage(message);
+                    $("#chatInput").val("");
+                }
+            });
+
+            // Model selector behavior
+            //     $('#modelSelector').on('change', function() {
+            //         currentModel = $(this).val();
+            //         const model = AI_MODELS[currentModel];
+            //
+            //         $('#modelInfo').html(`
+            //     <div class="model-description">
+            //         ${model.description}
+            //     </div>
+            // `);
+            //
+            //         addMessage(`Switched to ${model.name}\n${model.description}`, 'system');
+            //     });
+            //
+            //     // Trigger initial model info display
+            //     $('#modelSelector').trigger('change');
         });
 
         layout.on("initialised", function () {
