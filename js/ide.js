@@ -45,7 +45,6 @@ var timeEnd;
 var sqliteAdditionalFiles;
 var languages = {};
 
-var OPENROUTER_API_KEY = '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';
 var OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 var AI_SYSTEM_PROMPT = "You are a helpful coding assistant. You help users write, debug and understand code.";
 let completionTimeout = null;
@@ -168,6 +167,110 @@ async function sendToAI(prompt) {
         console.error('AI API Error:', error);
         return "Sorry, I encountered an error. Please try again.";
     }
+}
+
+async function getAICompletions(position) {
+    const code = sourceEditor.getValue();
+    const language = $selectLanguage.find(":selected").text();
+    const lineContent = code.split('\n')[position.lineNumber - 1];
+    const currentLine = lineContent.slice(0, position.column - 1);
+
+    const prompt = `
+        Given this code context in ${language}: ${code}
+    
+        Current line: "${currentLine}"
+        Cursor position: column ${position.column}
+        
+        Provide 3-5 likely short completions for what comes next. Format as a JSON array of strings. Example: ["completion1", "completion2"]
+        Keep completions concise and relevant to the current context.
+    `;
+
+    try {
+        const response = await sendToAI(prompt);
+        // Parse the response, expecting a JSON array of strings
+        let suggestions;
+        try {
+            suggestions = JSON.parse(response);
+            if (!Array.isArray(suggestions)) {
+                throw new Error('Response is not an array');
+            }
+        } catch (e) {
+            console.error('Failed to parse AI suggestions:', e);
+            return [];
+        }
+
+        return suggestions;
+    } catch (error) {
+        console.error('AI completion error:', error);
+        return [];
+    }
+}
+
+function hideExistingCompletionsWidget() {
+    $('.ai-completions-widget').remove();
+    $(document).off('keydown.completions');
+}
+
+function showCompletionsWidget(suggestions, position) {
+    // Remove any existing completion widget
+    hideExistingCompletionsWidget();
+
+    if (!suggestions || suggestions.length === 0) return;
+
+    const editorElement = sourceEditor.getDomNode();
+    const coordinates = sourceEditor.getScrolledVisiblePosition(position);
+    const editorRect = editorElement.getBoundingClientRect();
+
+    const suggestionWidget = $(`
+        <div class="ai-completions-widget">
+            ${suggestions.map((suggestion, index) => `
+                <div class="completion-item" data-index="${index}">
+                    <span class="completion-key">${index + 1}</span>
+                    <span class="completion-text">${suggestion}</span>
+                </div>
+            `).join('')}
+        </div>
+    `);
+
+    suggestionWidget.css({
+        left: `${editorRect.left + coordinates.left}px`,
+        top: `${editorRect.top + coordinates.top + 20}px`, // 20px below cursor
+    });
+
+    $('body').append(suggestionWidget);
+
+    // Add click handlers
+    suggestionWidget.find('.completion-item').on('click', function() {
+        const suggestion = suggestions[$(this).data('index')];
+        applyCompletion(suggestion, position);
+    });
+
+    // Add number key handlers (1-5 for suggestions)
+    $(document).on('keydown.completions', function(e) {
+        const num = parseInt(e.key);
+        if (num >= 1 && num <= suggestions.length) {
+            e.preventDefault();
+            applyCompletion(suggestions[num - 1], position);
+        } else if (e.key === 'Escape') {
+            hideExistingCompletionsWidget();
+        }
+    });
+}
+
+function applyCompletion(completion, position) {
+    const range = {
+        startLineNumber: position.lineNumber,
+        endLineNumber: position.lineNumber,
+        startColumn: position.column,
+        endColumn: position.column
+    };
+
+    sourceEditor.executeEdits('ai-completion', [{
+        range: range,
+        text: completion
+    }]);
+
+    hideExistingCompletionsWidget();
 }
 
 

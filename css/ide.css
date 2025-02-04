@@ -136,6 +136,45 @@ html, body {
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 
+.ai-completions-widget {
+    position: absolute;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    max-width: 300px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+}
+
+.completion-item {
+    padding: 4px 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.completion-item:hover {
+    background: #f0f0f0;
+}
+
+.completion-key {
+    color: #666;
+    font-size: 11px;
+    padding: 2px 4px;
+    background: #eee;
+    border-radius: 3px;
+}
+
+.completion-text {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 @keyframes typing {
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-4px); }
