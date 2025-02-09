@@ -45,43 +45,32 @@ var timeEnd;
 var sqliteAdditionalFiles;
 var languages = {};
 
-var OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-var AI_SYSTEM_PROMPT = "You are a helpful coding assistant. You help users write, debug and understand code.";
+
+
 let completionTimeout = null;
-const COMPLETION_DELAY = 500;
+let decorationIds = [];
+const COMPLETION_DELAY = 600;
+let aiService;
+const stopWords = ["return", "break", "continue", "import", "export", "end", ";", "}"];
+let isSelecting = false;
+let isCreatingMenu = false;
 
 
 var AI_MODELS = {
-    'openai/gpt-4': {
-        name: 'GPT-4',
-        maxTokens: 8192,
-        description: 'Most capable GPT-4 model for complex tasks'
-    },
-    'openai/gpt-3.5-turbo': {
-        name: 'GPT-3.5 Turbo',
-        maxTokens: 4096,
-        description: 'Faster and more cost-effective for simpler tasks'
-    },
-    'openai/gpt-4-turbo': {
-        name: 'GPT-4 Turbo',
-        maxTokens: 128000,
-        description: 'Latest GPT-4 with larger context window'
-    },
-    'anthropic/claude-3-opus': {
-        name: 'Claude 3 Opus',
+    'google/gemma-2-9b-it:free': {
+        name: 'Google Gemini',
         maxTokens: 200000,
-        description: 'Most powerful Claude model'
     },
-    'anthropic/claude-3-sonnet': {
-        name: 'Claude 3 Sonnet',
+    'qwen/qwen-2.5-coder-32b-instruct': {
+        name: 'Qwen2.5 Coder 32B Instruct',
         maxTokens: 200000,
-        description: 'Balanced Claude model'
+    },
+    'meta-llama/codellama-70b-instruct': {
+        name: 'Meta: CodeLlama 70B Instruct'
     }
 };
 
-// var currentModel = 'google/gemini-2.0-flash-thinking-exp:free'; // default model
-var currentModel = 'openai/gpt-3.5-turbo'; // default model
-var aiChatEditor;
+var currentModel = 'google/gemma-2-9b-it:free'; // default model
 var aiChatHistory = [];
 
 var layoutConfig = {
@@ -131,149 +120,73 @@ var layoutConfig = {
                 componentState: {
                     readOnly: false
                 }
+            }, {
+                    type: "component",
+                    componentName: "bug-finder",
+                    id: "bug-finder",
+                    title: "Bug Finder",
+                    height: 30,
+                    isClosable: true,
+                    componentState: {
+                        readOnly: false
+                    }
             }]
         }]
     }]
 };
 
-async function sendToAI(prompt) {
-    try {
-        const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                'HTTP-Referer': window.location.href,
-                'X-Title': 'Code IDE Assistant'
-            },
-            body: JSON.stringify({
-                model: currentModel,
-                messages: [
-                    { role: "system", content: AI_SYSTEM_PROMPT },
-                    { role: "user", content: prompt }
-                ],
-                // max_tokens: model.maxTokens
-            })
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error?.message || 'API request failed');
-        }
-
-        const data = await response.json();
-        return data.choices[0].message.content;
-    } catch (error) {
-        console.error('AI API Error:', error);
-        return "Sorry, I encountered an error. Please try again.";
-    }
-}
-
-async function getAICompletions(position) {
-    const code = sourceEditor.getValue();
+async function getInlineCompletion(code, position) {
+    console.log(code)
+    const model = sourceEditor.getModel();
     const language = $selectLanguage.find(":selected").text();
-    const lineContent = code.split('\n')[position.lineNumber - 1];
-    const currentLine = lineContent.slice(0, position.column - 1);
-    console.log(lineContent, currentLine)
 
-    const prompt = `
-        Given this code context in ${language}: ${code}
-    
-        Current line: "${currentLine}"
-        Cursor position: column ${position.column}
-        
-        Provide 3-5 likely short completions for what comes next. Format as a JSON array of strings. Example: ["completion1", "completion2"]
-        Keep completions concise and relevant to the current context.
-    `;
+    // Calculate available space
+    let availableLines = 0;
+    const currentLine = model.getLineContent(position.lineNumber);
+    const hasSpaceAfterCursor = currentLine.substring(position.column - 1).trim().length === 0;
+
+    if (hasSpaceAfterCursor) {
+        // Count empty lines after current position
+        let lineCount = 0;
+        let lineNumber = position.lineNumber + 1;
+
+        while (lineNumber <= model.getLineCount()) {
+            const lineContent = model.getLineContent(lineNumber).trim();
+            if (lineContent.length > 0) break;
+            lineCount++;
+            lineNumber++;
+        }
+        availableLines = lineCount + 1; // +1 for current line
+    }
 
     try {
-        const response = await sendToAI(prompt);
-        // Parse the response, expecting a JSON array of strings
-        let suggestions;
-        try {
-            suggestions = JSON.parse(response);
-            if (!Array.isArray(suggestions)) {
-                throw new Error('Response is not an array');
-            }
-        } catch (e) {
-            console.error('Failed to parse AI suggestions:', e);
-            return [];
+        const suggestion = await aiService.getCodeCompletion(
+            code,
+            position,
+            language,
+            availableLines
+        );
+
+        if (!suggestion) return null;
+
+        // Clean the suggestion
+        let cleanSuggestion = suggestion
+            .replace(/^```[\w-]*\n?/, '')
+            .replace(/\n?```$/, '')
+            .trim();
+
+        // Limit lines to available space
+        const lines = cleanSuggestion.split('\n');
+        if (lines.length > availableLines) {
+            cleanSuggestion = lines.slice(0, availableLines).join('\n');
         }
 
-        return suggestions;
+        return cleanSuggestion;
     } catch (error) {
-        console.error('AI completion error:', error);
-        return [];
+        console.error('OpenAI completion error:', error);
+        return null;
     }
 }
-
-function hideExistingCompletionsWidget() {
-    $('.ai-completions-widget').remove();
-    $(document).off('keydown.completions');
-}
-
-function showCompletionsWidget(suggestions, position) {
-    // Remove any existing completion widget
-    hideExistingCompletionsWidget();
-
-    if (!suggestions || suggestions.length === 0) return;
-
-    const editorElement = sourceEditor.getDomNode();
-    const coordinates = sourceEditor.getScrolledVisiblePosition(position);
-    const editorRect = editorElement.getBoundingClientRect();
-
-    const suggestionWidget = $(`
-        <div class="ai-completions-widget">
-            ${suggestions.map((suggestion, index) => `
-                <div class="completion-item" data-index="${index}">
-                    <span class="completion-key">${index + 1}</span>
-                    <span class="completion-text">${suggestion}</span>
-                </div>
-            `).join('')}
-        </div>
-    `);
-
-    suggestionWidget.css({
-        left: `${editorRect.left + coordinates.left}px`,
-        top: `${editorRect.top + coordinates.top + 20}px`, // 20px below cursor
-    });
-
-    $('body').append(suggestionWidget);
-
-    // Add click handlers
-    suggestionWidget.find('.completion-item').on('click', function() {
-        const suggestion = suggestions[$(this).data('index')];
-        applyCompletion(suggestion, position);
-    });
-
-    // Add number key handlers (1-5 for suggestions)
-    $(document).on('keydown.completions', function(e) {
-        const num = parseInt(e.key);
-        if (num >= 1 && num <= suggestions.length) {
-            e.preventDefault();
-            applyCompletion(suggestions[num - 1], position);
-        } else if (e.key === 'Escape') {
-            hideExistingCompletionsWidget();
-        }
-    });
-}
-
-function applyCompletion(completion, position) {
-    const range = {
-        startLineNumber: position.lineNumber,
-        endLineNumber: position.lineNumber,
-        startColumn: position.column,
-        endColumn: position.column
-    };
-
-    sourceEditor.executeEdits('ai-completion', [{
-        range: range,
-        text: completion
-    }]);
-
-    hideExistingCompletionsWidget();
-}
-
 
 function createModelSelector() {
     const selectorHtml = `
@@ -286,30 +199,16 @@ function createModelSelector() {
                     </option>
                 `).join('')}
             </select>
-            <div class="model-info" id="modelInfo"></div>
         </div>
     `;
 
     const selector = $(selectorHtml);
-
-    // Initialize the model info
-    selector.find('#modelInfo').html(`
-        <div class="model-description">
-            ${AI_MODELS[currentModel].description}
-        </div>
-    `);
 
     // Add change handler directly to the selector
     selector.find('#modelSelector').on('change', function() {
         const selectedModel = $(this).val();
         currentModel = selectedModel;
         const model = AI_MODELS[selectedModel];
-
-        selector.find('#modelInfo').html(`
-            <div class="model-description">
-                ${model.description}
-            </div>
-        `);
 
         // Add system message about model change
         addMessage(`Switched to ${model.name}\n${model.description}`, 'system');
@@ -336,84 +235,73 @@ function createChatInterface() {
                 </div>
             </div>
             <div class="chat-input-container">
-                <textarea 
-                    id="chatInput" 
-                    placeholder="Ask a question about your code..."
-                    rows="2"
-                    class="chat-input"
-                ></textarea>
-                <button id="sendChat" class="ui primary button">
-                    <i class="paper plane icon"></i>
-                    Send
-                </button>
+                <div id="codeContext" class="code-context-container"></div>
+                <div style="display: flex; gap: 8px">
+                    <textarea
+                        id="chatInput"
+                        placeholder="Ask a question about your code..."
+                        rows="2"
+                        class="chat-input"
+                    ></textarea>
+                    <button id="sendChat" class="ui primary button">
+                        <i class="paper plane icon"></i>
+                        Send
+                    </button>
+                </div>
             </div>
         </div>
     `;
-
-    const chatElement = $(chatHtml);
-
-    // Add context button after the interface is created
-    setTimeout(() => {
-        $('#contextButtonContainer').append(createContextButton());
-    }, 0);
-
-    return chatElement;
+    return $(chatHtml);
 }
 
-async function handleChatMessage(message) {
-    const chatMessages = $("#chatMessages");
-    const $chatInput = $("#chatInput"); // Using $ prefix to indicate jQuery object
+async function handleChatMessage(message, debugMode = false) {
+    const $chatMessages = $("#chatMessages");
+    const $chatInput = $("#chatInput");
     const $sendButton = $("#sendChat");
 
-    // Add user message
+    // Render user message
     addMessage(message, 'user');
-    const code = sourceEditor.getValue();
+
+    const contextElement = document.querySelector('.active-code-context');
+    let code = '';
+
+    if (contextElement) {
+        // Use the code from context above textarea
+        const codeBlock = contextElement.querySelector('pre code');
+        code = codeBlock.textContent;
+    } else {
+        // Use whole file if no context
+        code = sourceEditor.getValue();
+    }
+
     const language = $selectLanguage.find(":selected").text();
-    const input = stdinEditor.getValue();
-    const output = stdoutEditor.getValue();
-    const compilerOutput = $statusLine.text();
+    const input = !contextElement ? stdinEditor.getValue() : "";
+    const output = !contextElement ? stdoutEditor.getValue() : "";
+    const compilerOutput = !contextElement ? $statusLine.text() : "";
 
-    // Show typing indicator
+    // Typing indicator
     const loadingIndicator = showTypingIndicator();
-    chatMessages.append(loadingIndicator);
-    chatMessages.scrollTop(chatMessages[0].scrollHeight);
-
-    // Prepare context for AI
-
-    let contextString = "";
-    if (code) {
-        contextString += `Full code:\n\`\`\`${language}\n${code}\n\`\`\`\n\n`;
-    }
-
-    if (input) {
-        contextString += `Input:\n\`\`\`\n${input}\n\`\`\`\n\n`;
-    }
-    if (output) {
-        contextString += `Output:\n\`\`\`\n${output}\n\`\`\`\n\n`;
-    }
-    if (compilerOutput && compilerOutput.includes("Error")) {
-        contextString += `Compiler Output:\n\`\`\`\n${compilerOutput}\n\`\`\`\n\n`;
-    }
-
-    let prompt = contextString ?
-        `Given this context:\n\n${contextString}\n${message}` :
-        message;
+    $chatMessages.append(loadingIndicator);
+    $chatMessages.scrollTop($chatMessages[0].scrollHeight);
 
     try {
-        const response = await sendToAI(prompt);
-        loadingIndicator.remove();
+        const response = await aiService.getChatResponse(message, {code, language, input, output, compilerOutput}, currentModel);
         addMessage(response, 'ai');
 
         // Store in chat history
         aiChatHistory.push({ role: 'user', content: message });
         aiChatHistory.push({ role: 'assistant', content: response });
-        if (aiChatHistory.length > 50) { // Keep last 50 messages
+
+        // Keep last 50 messages
+        if (aiChatHistory.length > 50) {
             aiChatHistory = aiChatHistory.slice(-50);
         }
     } catch (error) {
-        loadingIndicator.remove();
+        console.log(error)
         addMessage("Sorry, I encountered an error. Please try again.", 'error');
     } finally {
+        loadingIndicator.remove();
+
         // Re-enable input and button
         $chatInput.attr('disabled', false);
         $sendButton.removeClass('disabled');
@@ -451,24 +339,203 @@ function addMessage(content, type = 'ai') {
     chatMessages.scrollTop(chatMessages[0].scrollHeight);
 }
 
-function formatMessage(content) {
-    // Use marked for markdown formatting
-    const formattedContent = marked.parse(content, {
-        breaks: true,
-        gfm: true
+function toggleDebugDisability(shouldDisable) {
+    const $debugWithAIBtn = $("#debug-with-ai")
+
+    $debugWithAIBtn.prop('disabled', shouldDisable);
+
+    if (shouldDisable) {
+        $debugWithAIBtn.off('click');
+    } else {
+        $debugWithAIBtn.click(function (event) {
+            handleChatMessage("Help me debug this code.");
+        })
+    }
+}
+
+function showInlineSuggestion(suggestion, position) {
+    // Clear existing decorations first
+    if (decorationIds.length > 0) {
+        sourceEditor.deltaDecorations(decorationIds, []);
+        decorationIds = [];
+    }
+
+    const model = sourceEditor.getModel();
+    const suggestionLines = suggestion.split('\n');
+    const decorations = [];
+
+    // Check if there's content after cursor on first line
+    const firstLineContent = model.getLineContent(position.lineNumber);
+    const textAfterCursor = firstLineContent.substring(position.column - 1);
+
+    // If there's content after cursor, don't show suggestion
+    if (textAfterCursor.trim().length > 0) {
+        return [];
+    }
+
+    // Check if we have space for all lines
+    let hasSpace = true;
+    for (let i = 1; i < suggestionLines.length; i++) {
+        const lineNumber = position.lineNumber + i;
+        if (lineNumber <= model.getLineCount()) {
+            const lineContent = model.getLineContent(lineNumber);
+            if (lineContent.trim().length > 0) {
+                hasSpace = false;
+                break;
+            }
+        }
+    }
+
+    // Only show suggestion if we have space for all lines
+    if (hasSpace) {
+        // Add first line
+        decorations.push({
+            range: new monaco.Range(
+                position.lineNumber,
+                position.column,
+                position.lineNumber,
+                position.column
+            ),
+            options: {
+                after: {
+                    content: suggestionLines[0],
+                    inlineClassName: 'ghost-text'
+                },
+                showIfCollapsed: true,
+                stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+            }
+        });
+
+        // Add subsequent lines
+        for (let i = 1; i < suggestionLines.length; i++) {
+            decorations.push({
+                range: new monaco.Range(
+                    position.lineNumber + i,
+                    1,
+                    position.lineNumber + i,
+                    1
+                ),
+                options: {
+                    after: {
+                        content: suggestionLines[i],
+                        inlineClassName: 'ghost-text'
+                    },
+                    showIfCollapsed: true,
+                    stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+                }
+            });
+        }
+    }
+
+    // Apply decorations
+    decorationIds = sourceEditor.deltaDecorations([], decorations);
+
+    // Store the suggestion for tab completion
+    sourceEditor._currentSuggestion = {
+        text: suggestion,
+        position: position
+    };
+
+    return decorationIds;
+}
+
+function isCursorInsideCommentOrString(code, position) {
+    const beforeCursor = code.substring(0, position);
+    return /\/\/|\/\*|\*\/|".*"|'.*'/.test(beforeCursor);
+}
+
+async function analyzeCode(code, language) {
+    const codeWithLineNumbers = code.split('\n')
+        .map((line, index) => `${index + 1}: ${line}`)
+        .join('\n');
+
+    const prompt = `
+        Analyze this ${language} code and identify specific code snippets that contain potential issues.
+        Also identify snippets that has bugs. The code below includes line numbers at the start of each line (format: "lineNumber: code").
+        Use these EXACT line numbers in your response.
+        Return your analysis as a JSON array of issues. Each issue should have this exact structure:
+        {
+            "title": "Brief title of the issue",
+            "location": "Line X" (where X is the exact line number from where the issue arises, e.g., "Line 42"),
+            "badCode": "The problematic code snippet",
+            "problem": "Detailed explanation of why this is an issue",
+            "fixedCode": "The corrected version of the code",
+            "explanation": "Why the fix works"
+        }
+        
+
+        Example response format:
+        [{"title": "Null Reference", "location": "Line 45", "badCode": "user.getName()", "problem": "No null check", "fixedCode": "if (user) { user.getName(); }", "explanation": "Added null check"}]
+
+        Important:
+        - Format the response as a single line starting with [{ and ending with }]
+        - Return valid JSON that can be parsed
+        - For location, use EXACT format "Line X" where X is the line number where the issue arises
+        - Keep the exact section headers as shown above
+        - Don't use markdown code blocks or backticks
+        - Only include snippets that have actual issues
+        - Make sure PROBLEM and EXPLANATION sections are not empty
+        - Provide specific FIXED CODE examples, not just general advice
+        - Focus on the most important issues first
+        - Limit to 3-5 most critical issues
+
+        CODE TO ANALYZE:
+        ${codeWithLineNumbers}
+    `;
+
+    // Get analysis from AI
+    const analysis = await aiService.fetchAIChatResponse(prompt);
+    const issues = JSON.parse(analysis);
+    displayResults(issues);
+}
+
+function splitCodeIntoSegments(code) {
+    // Split code into logical segments (functions, classes, blocks)
+    const segments = [];
+
+    // For demonstration, using a simple split by double newline
+    // You might want to use a proper parser for your specific language
+    const rawSegments = code.split(/\n\s*\n/);
+
+    rawSegments.forEach((segment, index) => {
+        if (segment.trim()) {
+            segments.push({
+                id: index,
+                code: segment.trim(),
+                startLine: code.slice(0, code.indexOf(segment)).split('\n').length,
+                endLine: code.slice(0, code.indexOf(segment) + segment.length).split('\n').length
+            });
+        }
     });
 
-    return formattedContent;
+    return segments;
 }
 
-function explainCode() {
-    const language = $selectLanguage.find(":selected").text();
-    handleChatMessage(`Explain this ${language} code`);
-}
+function handleTabCompletion() {
+    if (sourceEditor._currentSuggestion) {
+        // If there's a suggestion, accept it
+        const suggestion = sourceEditor._currentSuggestion;
+        const position = suggestion.position;
 
-function suggestImprovements() {
-    const language = $selectLanguage.find(":selected").text();
-    handleChatMessage(`Suggest improvements for this ${language} code`);
+        sourceEditor.executeEdits('suggestion', [{
+            range: {
+                startLineNumber: position.lineNumber,
+                endLineNumber: position.lineNumber,
+                startColumn: position.column,
+                endColumn: position.column
+            },
+            text: suggestion.text
+        }]);
+
+        // Clear the decorations and suggestion
+        if (decorationIds.length > 0) {
+            sourceEditor.deltaDecorations(decorationIds, []);
+            decorationIds = [];
+        }
+        sourceEditor._currentSuggestion = null;
+        return true;
+    }
+    return false;
 }
 
 const PUTER = puter.env === "app";
@@ -485,6 +552,66 @@ function decode(bytes) {
     } catch {
         return unescape(escaped);
     }
+}
+
+function displayResults(issues) {
+    // Clear loading message
+    $('#bugFinderResults').empty();
+
+    if (issues.length === 0) {
+        $('#bugFinderResults').html(`
+            <div class="bug-finder-message success">
+                <i class="check circle icon"></i> No significant issues found in the code.
+            </div>
+        `);
+        return;
+    }
+
+    // Display each issue
+    issues.forEach((issue) => {
+        const issueElement = $(`
+            <div class="issue-container">
+                <div class="issue-header">
+                    <i class="warning circle icon"></i>
+                    ${issue.title}
+                    ${issue.location ? `<span class="location-badge">${issue.location}</span>` : ''}
+                </div>
+                <div class="issue-content">
+                    <div class="code-section">
+                        <div class="code-header problematic">
+                            <i class="times circle icon"></i> Problematic Code
+                        </div>
+                        <pre><code>${issue.badCode}</code></pre>
+                    </div>
+                    
+                    ${issue.problem ? `
+                        <div class="problem-section">
+                            <div class="section-label">Problem:</div>
+                            <div class="section-content">${issue.problem}</div>
+                        </div>
+                    ` : ''}
+
+                    ${issue.fixedCode ? `
+                        <div class="code-section">
+                            <div class="code-header fixed">
+                                <i class="check circle icon"></i> Fixed Code
+                            </div>
+                            <pre><code>${issue.fixedCode}</code></pre>
+                        </div>
+                    ` : ''}
+
+                    ${issue.explanation ? `
+                        <div class="explanation-section">
+                            <div class="section-label">Explanation:</div>
+                            <div class="section-content">${issue.explanation}</div>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `);
+
+        $('#bugFinderResults').append(issueElement);
+    });
 }
 
 function showError(title, content) {
@@ -542,6 +669,14 @@ function handleResult(data) {
         memory: data.memory,
         output: output
     })), "*");
+}
+
+function removeContextMenu() {
+    const menu = $('#selection-context-menu');
+    if (menu.length) {
+        menu.find('.ui.dropdown').dropdown('destroy');
+        menu.remove();
+    }
 }
 
 async function getSelectedLanguage() {
@@ -659,6 +794,7 @@ function fetchSubmission(flavor, region, submission_token, iteration) {
                 $statusLine.html(data.status.description);
                 setTimeout(fetchSubmission.bind(null, flavor, region, submission_token, iteration + 1), WAIT_TIME_FUNCTION(iteration));
             } else {
+                toggleDebugDisability(!data.status.description.toLowerCase().includes("error"));
                 handleResult(data);
             }
         },
@@ -851,6 +987,8 @@ $(document).ready(async function () {
         lastResort: "left center"
     });
 
+    aiService = new AIService();
+
     refreshSiteContentHeight();
 
     console.log("Hey, Judge0 IDE is open-sourced: https://github.com/judge0/ide. Have fun!");
@@ -937,40 +1075,180 @@ $(document).ready(async function () {
                 }
             });
 
+
+            // Track current suggestion decorations
+            sourceEditor._currentSuggestionDecorations = [];
+            sourceEditor._currentSuggestion = null;
+
             sourceEditor.onDidChangeModelContent((e) => {
-                // Clear any pending completion request
+                // Clear any pending requests
                 if (completionTimeout) {
                     clearTimeout(completionTimeout);
                 }
 
-                // Hide any existing completion widget
-                hideExistingCompletionsWidget();
+                // Clear current suggestions
+                if (decorationIds.length > 0) {
+                    sourceEditor.deltaDecorations(decorationIds, []);
+                    decorationIds = [];
+                }
+
+                // Don't show suggestions while composing or undoing
+                if (e.isFlush || e.isUndoing || e.isRedoing) {
+                    return;
+                }
 
                 // Set new timeout for completion request
                 completionTimeout = setTimeout(async () => {
+                    // Make sure editor still has focus
+                    if (!sourceEditor.hasTextFocus()) {
+                        return;
+                    }
+
                     const position = sourceEditor.getPosition();
                     const model = sourceEditor.getModel();
 
-                    // Don't trigger completion if line is empty or cursor is at start
+                    if (!position || !model) {
+                        return;
+                    }
+
+
+                    // Get the current line content
                     const lineContent = model.getLineContent(position.lineNumber);
-                    if (!lineContent.trim() || position.column === 1) return;
-                    const suggestions = await getAICompletions(position);
-                    showCompletionsWidget(suggestions, position);
+                    const currentLine = lineContent.substring(0, position.column - 1);
+
+                    // Enhanced checks for when not to show suggestions
+                    if (
+                        !currentLine.trim() || // Empty line
+                        position.column === 1 || // Cursor at start
+                        currentLine.trim().length < 3 || // Too short
+                        stopWords.some(word => currentLine.trim().endsWith(word)) || // Ends with stop word
+                        isCursorInsideCommentOrString(model.getValue(), model.getOffsetAt(position)) || // In comment/string
+                        /[{};]$/.test(currentLine.trim()) // Just typed a block delimiter
+                    ) {
+                        return;
+                    }
+
+                    try {
+                        const suggestion = await getInlineCompletion(model.getValue(), position);
+
+                        // Verify position hasn't changed while waiting for suggestion
+                        if (!sourceEditor.getPosition().equals(position)) {
+                            return;
+                        }
+
+                        if (suggestion) {
+                            decorationIds = showInlineSuggestion(suggestion, position);
+                        }
+                    } catch (error) {
+                        // Clear any partial decorations on error
+                        if (decorationIds.length > 0) {
+                            sourceEditor.deltaDecorations(decorationIds, []);
+                            decorationIds = [];
+                        }
+                    }
                 }, COMPLETION_DELAY);
             });
 
-            sourceEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, run);
-            sourceEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, async () => {
-                const position = sourceEditor.getPosition();
-                const model = sourceEditor.getModel();
-                const code = model.getValue();
-                const language = $selectLanguage.find(":selected").text();
-
-                const suggestions = await getAICompletions(code, position, language);
-                showCompletionsWidget(suggestions, position);
+            sourceEditor.getDomNode().addEventListener('mousedown', (e) => {
+                isSelecting = true;
             });
-        });
 
+            sourceEditor.getDomNode().addEventListener('mouseup', (e) => {
+                if (!isSelecting) return;
+                isSelecting = false;
+                isCreatingMenu = true;
+
+                const selection = sourceEditor.getSelection();
+                const selectedText = sourceEditor.getModel().getValueInRange(selection);
+
+                if (selectedText.trim()) {
+                    // Get coordinates of selection
+                    const position = sourceEditor.getScrolledVisiblePosition(selection.getStartPosition());
+                    const editorCoords = sourceEditor.getDomNode().getBoundingClientRect();
+
+                    // Remove any existing menu
+                    removeContextMenu();
+
+
+                    // Create context menu
+                    const contextMenu = $(`
+                        <div id="selection-context-menu" style="position: fixed; left: ${editorCoords.left + position.left + 10}px; top: ${editorCoords.top + position.top}px; z-index: 1000;">
+                            <div class="ui dropdown">
+                                <div class="text">Add to Chat</div>
+                                <i class="dropdown icon"></i>
+                                <div class="menu">
+                                    <div class="item" id="add-context-btn">
+                                        <i class="plus icon"></i>
+                                        Add as Context
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `);
+
+                    // Add to body
+                    $('body').append(contextMenu);
+
+                    // Initialize Semantic UI dropdown
+                    $('#selection-context-menu .ui.dropdown').dropdown();
+
+                    // Add click handler
+                    $('#add-context-btn').click(() => {
+                        let $codeContextDiv = $('#codeContext');
+                        const language = $selectLanguage.find(":selected").text();
+
+                        // Clear any existing context
+                        $codeContextDiv.empty().append($(`
+                            <div class="active-code-context">
+                                <div class="context-header">
+                                    <span class="context-label">
+                                        <i class="code icon"></i> Selected Code
+                                    </span>
+                                    <button class="ui mini icon button remove-context">
+                                        <i class="times icon"></i>
+                                    </button>
+                                </div>
+                                <div class="context-content">
+                                    <pre><code class="language-${language}">${selectedText}</code></pre>
+                                </div>
+                            </div>
+                        `));
+
+                        $codeContextDiv.find('.remove-context').on('click', function() {
+                            $('#codeContext').empty();
+                        });
+
+                        // Scroll chat to bottom
+                        const chatMessages = document.getElementById('chatMessages');
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+
+                        // Remove the context menu
+                        $('#selection-context-menu .ui.dropdown').dropdown('destroy');
+                        $('#selection-context-menu').remove();
+                    });
+
+                    setTimeout(() => {
+                        isCreatingMenu = false;
+                    }, 0);
+
+                    // Stop event propagation
+                    e.stopPropagation();
+                }
+            });
+
+            sourceEditor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, run);
+            sourceEditor.addCommand(monaco.KeyCode.Tab, () => {
+                if (!handleTabCompletion()) {
+                    sourceEditor.trigger('keyboard', 'tab', null);
+                }
+            });
+
+            sourceEditor.onDidChangeCursorPosition(() => {
+                if (decorationIds.length > 0) {
+                    decorationIds = sourceEditor.deltaDecorations(decorationIds, []);
+                }
+            });
+        })
 
         layout.registerComponent("stdin", function (container, state) {
             stdinEditor = monaco.editor.create(container.getElement()[0], {
@@ -1005,15 +1283,8 @@ $(document).ready(async function () {
             // Add model selector
             const modelSelector = createModelSelector();
 
-            const explainBtn = $('<button class="ui button">Explain Code</button>');
-            const improveBtn = $('<button class="ui button">Suggest Improvements</button>');
-
-            explainBtn.click(explainCode);
-            improveBtn.click(suggestImprovements);
 
             toolbar.append(modelSelector)
-            toolbar.append(explainBtn)
-            toolbar.append(improveBtn);
             wrapper.append(toolbar);
 
             // Add chat interface
@@ -1041,23 +1312,62 @@ $(document).ready(async function () {
                     $("#chatInput").val("");
                 }
             });
+        });
 
-            // Model selector behavior
-            //     $('#modelSelector').on('change', function() {
-            //         currentModel = $(this).val();
-            //         const model = AI_MODELS[currentModel];
-            //
-            //         $('#modelInfo').html(`
-            //     <div class="model-description">
-            //         ${model.description}
-            //     </div>
-            // `);
-            //
-            //         addMessage(`Switched to ${model.name}\n${model.description}`, 'system');
-            //     });
-            //
-            //     // Trigger initial model info display
-            //     $('#modelSelector').trigger('change');
+        layout.registerComponent("bug-finder", function (container, state) {
+            const wrapper = $('<div class="bug-finder-wrapper"></div>');
+            const toolbar = $('<div class="bug-finder-toolbar"></div>');
+
+            // Add analyze button
+            const buttonGroup = $(`
+                <div class="ui buttons">
+                    <button id="startAnalysis" class="ui primary button">
+                        <i class="search icon"></i>
+                        Start Code Analysis
+                    </button>
+                </div>
+            `);
+            toolbar.append(buttonGroup);
+
+            wrapper.append(toolbar);
+
+            // Add main content area
+            const content = $(`
+                <div class="bug-finder-content">
+                    <div id="bugFinderResults" class="results-container"></div>
+                </div>
+            `);
+            wrapper.append(content);
+
+            container.getElement().append(wrapper);
+
+            // Add event handler for analysis
+            wrapper.on('click', '#startAnalysis', async function() {
+                const button = $(this);
+                button.addClass('loading disabled');
+
+                const fileContent = sourceEditor.getValue();
+                const language = $selectLanguage.find(":selected").text();
+
+                // Clear previous results
+                $('#bugFinderResults').empty().append(`
+                    <div class="bug-finder-message" style="color: white">
+                        <i class="spinner loading icon"></i> Scanning code for potential issues...
+                    </div>
+                `);
+
+                try {
+                    await analyzeCode(fileContent, language);
+                } catch (error) {
+                    $('#bugFinderResults').html(`
+                        <div class="bug-finder-message error">
+                            <i class="exclamation triangle icon"></i> Analysis failed: ${error.message}
+                        </div>
+                    `);
+                } finally {
+                    button.removeClass('loading disabled');
+                }
+            });
         });
 
         layout.on("initialised", function () {
@@ -1130,6 +1440,21 @@ $(document).ready(async function () {
             }
         }
     };
+});
+
+// Document click handler
+$(document).on('mousedown', (e) => {
+    if (!$(e.target).closest('#selection-context-menu').length) {
+        removeContextMenu();
+    }
+});
+
+// Add context button click handler
+$(document).on('click', '#add-context-btn', () => {
+    // Your existing add context code...
+
+    // Remove the menu after adding context
+    removeContextMenu();
 });
 
 const DEFAULT_SOURCE = "\
